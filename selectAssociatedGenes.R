@@ -19,6 +19,7 @@
 #	PSEUDO-CODE.
 #	
 #	10	DECLARE XMB AS INT: NUMBER IN MEGABASES TO SEARCH GENES NEAR TO THE SIGNIFICATIVE SNP
+#	12	DECLARE ALPHA AS NUMERIC: PVALUE CUTOFF.
 #	15	DECLARE PROD_CONTAINER AS A MATRIX WITH DIMS OF 1 X 4 
 #	20	WITH INPUT FILES CREATE DATA OBJECTS (OBJECT-GWAS-RESULTS, OBJECT-HEADER-HASH, OBJECT-GFF).
 #	30	ITERATE AMONG OBJECT-GWAS-RESULTS ROWS.
@@ -37,24 +38,81 @@
 ############################################################
 
 
-selectAssociatedGenes <- function(xmb, input_files) {
+selectAssociatedGenes <- function(xmb, alpha, SNPS, GFF, HEADER) {
 	#	LOADING LIBRARY
 	stopifnot("rtracklayer" %in% rownames(installed.packages()))
-	library(rtracklayer)
-	#	CREATING OBJECTS FROM DATA
-	GWAS <- read.delim(input_files[1], header=TRUE, sep=",", as.is=TRUE)
-	GFF <- import.gff3(input_files[2])
-	HEADER <- read.delim(input_files[3], header=FALSE, sep="|", as.is=TRUE)
+	if ( ! "rtracklayer" %in% c(.packages()) ) {
+		cat("\nLoading required package rtracklayer!\n")
+		library(rtracklayer)
+	}
 
-	num_of_gwas_rows <- length(GWAS[,1])
+	#	CREATING OBJECTS FROM DATA
+#	cat("\nPre-processing GWAS results!\n")
+#	GWAS <- GWAS[GWAS[,4] <= alpha,]
+#	print(head(GWAS))
+	
+	cat("\nPre-processing SNPs position\n")
+	SNPS <- SNPS[,1:3]
+	print(head(SNPS))
+
+	cat("\nPre-processing GFF transcriptome!\n")
+	GFF <- GFF[ GFF$type == "mRNA" | GFF$type == "transcript" , ]
+	cat("\nTranscriptome too large to print in screen!\n")
+
+	cat("\nPre-processing HEADER!\n")
+	if (sum(grepl(">", HEADER$V1)) > 0) {
+		HEADER$V1 <- gsub(">", "", HEADER$V1)
+	}
+	print(head(HEADER))
+	
+	#	SPLIT GWAS BY CHRN: HIGHLY RECOMENDED TO INCREASE PERFORMANCE
+
+	#	PERFORMING ITERATIONS AMONG GWAS-RESULTS DATA-FRAME'S ROWS
+	cat("\nPerfomring extraction task!\n")
+	num_of_gwas_rows <- length(SNPS[,1])
+	pb <- txtProgressBar(min = 0, max = num_of_gwas_rows, style = 3)
 
 	for (i in 1:num_of_gwas_rows) {
-		name <- GWAS[i,1]
-		chrn <- HEADER[as.numeric(GWAS[i,2]) == chrn,1]
-		pos <- as.numeric(GWAS[i,3])
-		pval <- as.numeric(GWAS[i,4]) # I do not remeber what the column number is. Watch Out!
-		start <- pos - xmb
-		end <- pos + xmb
-		
+		name <- as.character(SNPS[i,1])
+		chrn <- as.character(HEADER[HEADER$V2 == as.numeric(SNPS[i,2]),1])
+		pos <- as.numeric(SNPS[i,3])
+#		pval <- as.numeric(GWAS[i,4]) # I do not remeber what the column number is. It is OK! I checked it!
+		start <- pos - (xmb * 1000000)
+		end <- pos + (xmb * 1000000)
+		TMP_GFF <- GFF[seqnames(GFF) == chrn,]
+		PROD <- TMP_GFF[ TMP_GFF@ranges@start >= start & TMP_GFF@ranges@start + TMP_GFF@ranges@width <= end, ]@elementMetadata@listData$product
+		TRID <- TMP_GFF[ TMP_GFF@ranges@start >= start & TMP_GFF@ranges@start + TMP_GFF@ranges@width <= end, ]@elementMetadata@listData$transcript_id
+		GNID <- TMP_GFF[ TMP_GFF@ranges@start >= start & TMP_GFF@ranges@start + TMP_GFF@ranges@width <= end, ]@elementMetadata@listData$gene
+		PROD <- cbind(PROD, TRID, GNID)
+		if (length(PROD) == 0) {
+			setTxtProgressBar(pb, i)
+			next
+		}
+		if(length(PROD) > 3) {
+			PROD <- PROD[order(PROD[,2]),]
+			PROD <- PROD[ !duplicated(PROD[,2]) , ]
+			NAME <- rep(name, length(PROD[,2]))
+			CHRN <- rep(chrn, length(PROD[,2]))
+			POS <- rep(pos, length(PROD[,2]))
+#			PVAL <- rep(pval, length(PROD[,2]))
+			XMB <- rep(xmb, length(PROD[,2]))
+		} else {
+			NAME <- name
+			CHRN <- chrn
+			POS <- pos
+#			PVAL <- pval
+			XMB <- xmb
+		}
+		TMP_PROD_CONTAINER <- cbind(NAME, CHRN, POS, XMB, PROD) # PVAL was removed! Watch out!
+		if (exists("PROD_CONTAINER")) {
+			PROD_CONTAINER <- rbind(PROD_CONTAINER, TMP_PROD_CONTAINER)
+		} else {
+			PROD_CONTAINER <- TMP_PROD_CONTAINER
+		}
+		setTxtProgressBar(pb, i)
 	}
+	close(pb)
+	rm(GFF)
+	rm(SNPS)
+	as.data.frame(PROD_CONTAINER)
 }
