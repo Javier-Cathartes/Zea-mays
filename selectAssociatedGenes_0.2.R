@@ -112,3 +112,39 @@ selectAssociatedGenes <- function(xmb, SNPS, GFF, HEADER) {
 	rm(SNPS)
 	as.data.frame(PROD_CONTAINER)
 }
+
+#######################################################################################################
+#
+#	leftJoin
+#
+#	PERFORMS A LEFT JOIN OVER DIFFERENT SETS TO INCORPORATE RELATE DATA
+#	OF SNPS P-VALUES, PROTEIN IDS, AND GO TERMS TO TRANSCRIPTS IDS
+#	AND SNPS IDS.
+#	
+#	REQUIRED ITEMS:
+#		GENES.-		THIS IS THE OUTPUT TABLE FROM selectedAssociatedGenes FUNCTION.
+#		SNPS.-		THIS IS THE GAPIT GWAS RESULT CSV TABLE.
+#		TRANS_2_PROT.-	THIS IS THE TABLE EXTRACTED FROM GFF TRANSCRIPTOME UPLOADED WITH
+#				imort.gff3 FUNCTION FROM rtracklayer R PACKAGE.
+#		PROT_2_GO.-	THIS IS THE MODIFIED OUTPUT TABLE FROM INTERPROSCAN SEARCHING,
+#				THIS TABLE ONLY HAS THE PROTEIN ID AND GO TERM.
+#
+########################################################################################################
+
+leftJoin <- function(GENES, SNPS, TRANS_2_PROT, PROT_2_GO) {
+	
+	#	MERGING GENES-NEAR-TO-SNP TABLE WITH SNPS-PVALUES TABLE
+	tmp <- merge(GENES, SNPS[,c("SNP", "P.value")], by.x="NAME", by.y="SNP", all.x=T)
+	
+	#	MERGING TMP TABLE WITH TRANSCRIPTS_ID_2_PROT_ID TABLE
+	if (sum(grepl(".*-", TRANS_2_PROT$Parent.value)) > 0) {
+	
+		TRANS_2_PROT$Parent.value <- gsub(".*-", TRANS_2_PROT$Parent.value)
+	}
+	tmp <- merge(tmp, TRANS_2_PROT, by.x="TRID", by.y="Parent.value", all.x=T)
+
+	#	MERGING TMP TABLE WITH PROTEIN_ID_2_GOTERM TABLE
+	tmp <- merge(tmp, PROT_2_GO[,c("V1", "V14")], by.x="TRID", by.y="V1", all.x=T)
+	
+	tmp
+}
