@@ -13,7 +13,7 @@
 #	TAKES THE GWAS ANALYSIS RESULTS TABLE, A TRANSCRIPTOME ANNOTATION
 #	FILE IN GFF FORMAT AND A HEADER HASH TABLE RELATING CHROMOSOME
 #	NAME AND NUMBER OF CHROMOSOME. THIS CODE WILL SELECT GENES NEAR 
-#	TO A SIGNIFICATIVE SNP ASSOCIATED WITH PHENOTYPE.
+#	(X MEGABASES) TO A SIGNIFICATIVE SNP ASSOCIATED WITH PHENOTYPE.
 #
 #
 #	PSEUDO-CODE.
@@ -117,6 +117,8 @@ selectAssociatedGenes <- function(xmb, SNPS, GFF, HEADER) {
 #
 #	leftJoin
 #
+#	SAME AUTHORS, CONTACT AND VERSION AS IS DESCRIBED IN selectAssociatedGenes
+#
 #	PERFORMS A LEFT JOIN OVER DIFFERENT SETS TO INCORPORATE RELATE DATA
 #	OF SNPS P-VALUES, PROTEIN IDS, AND GO TERMS TO TRANSCRIPTS IDS
 #	AND SNPS IDS.
@@ -129,22 +131,148 @@ selectAssociatedGenes <- function(xmb, SNPS, GFF, HEADER) {
 #		PROT_2_GO.-	THIS IS THE MODIFIED OUTPUT TABLE FROM INTERPROSCAN SEARCHING,
 #				THIS TABLE ONLY HAS THE PROTEIN ID AND GO TERM.
 #
+#	PSEUDO-CODE
+#		LET THE GENES BE LEFT JOINED WITH SNPS BY NAME AND SNP COLNAMES
+#		LET THE RESULTING TABLE BE LEFT JOINED WITH TRANS_2_PROT BY TRID AND PARENT.VALUE COLNAMES
+#		LET THE RESULTING TABLE BE LEFT JOINED WITH PROT_2_GO BY TRID AND V1 COLNAMES
+#
 ########################################################################################################
 
-leftJoin <- function(GENES, SNPS, TRANS_2_PROT, PROT_2_GO) {
-	
+leftJoin <- function(GENES, SNPS, TRANS_2_PROT, PROT_2_GO, full=FALSE) {
+	cat("\nMerging tables\n")
 	#	MERGING GENES-NEAR-TO-SNP TABLE WITH SNPS-PVALUES TABLE
 	tmp <- merge(GENES, SNPS[,c("SNP", "P.value")], by.x="NAME", by.y="SNP", all.x=T)
-	
+
 	#	MERGING TMP TABLE WITH TRANSCRIPTS_ID_2_PROT_ID TABLE
 	if (sum(grepl(".*-", TRANS_2_PROT$Parent.value)) > 0) {
 	
-		TRANS_2_PROT$Parent.value <- gsub(".*-", TRANS_2_PROT$Parent.value)
+		TRANS_2_PROT$Parent.value <- gsub(".*-", "", TRANS_2_PROT$Parent.value)
 	}
 	tmp <- merge(tmp, TRANS_2_PROT, by.x="TRID", by.y="Parent.value", all.x=T)
 
 	#	MERGING TMP TABLE WITH PROTEIN_ID_2_GOTERM TABLE
-	tmp <- merge(tmp, PROT_2_GO[,c("V1", "V14")], by.x="TRID", by.y="V1", all.x=T)
+	tmp <- merge(tmp, PROT_2_GO[,c("V1", "V14")], by.x="protein_id", by.y="V1", all.x=T)
 	
+	cat("\nEliminating duplicates\n")
+	tmp <- tmp[ order(tmp$protein_id, tmp$V14, decreasing=T), ]
+	#	ELIMINATING ALL DUPLICATES WITH NO GO TERM
+	keep1 <- duplicated(tmp[,1:9])
+	keep2 <- tmp$V14 == ""
+	keep2[ is.na(keep2) ] <- FALSE
+	keep3 <- keep1 & keep2
+	keep3 <- !keep3
+	tmp <- tmp[ keep3, ]
+	#	ELIMINATING DUPLICATED ENTRIES
+	keep <- !duplicated(tmp)
+	tmp <- tmp[ keep, ]
+	#	FULL LEFTJOIN
+	#	ELIMINATING ALL ENTRIES WITHOUT GO TERMS
+	if (full) {
+		cat("\nEliminating entries without GO terms\n")
+		keep <- tmp$V14 != ""
+		keep[ is.na(keep) ] <- FALSE
+		tmp <- tmp[ keep, ]
+	}
+
 	tmp
+}
+
+#############################################################################################################
+#
+#	GPGtable
+#	
+#	CREATES A GENE ID, P.VALUE, GO TERMS TABLE
+#
+#	REQUIRES THE MERGED TABLE (MT) FROM leftJoin FUNCTION.
+#
+#############################################################################################################
+
+GPGtable <- function(MT) {
+	
+	cat("\nCreating GPG table,")
+	# BUG 1.	Different SNPS are closer to acco20 in MT table, so after sorintg and unique GNID
+	#		the way of allocating p-values to GO terms is wrong but results are ok.
+	#		It seems to be a classical silent bug who does not affect the output.
+	MT <- MT[,c("GNID", "P.value", "V14")]
+	GNID <- MT$GNID
+	GNID <- unique(sort(GNID)) # HERE IS THE BUG.
+	length_GNID <- length(GNID)
+	cat("\nProcessing ", length(GNID), "genes\n")
+	MT <- MT[order(MT$GNID),]
+	pb <- txtProgressBar(min = 0, max = length_GNID, style = 3)
+
+	for (i in 1:length_GNID) {
+		p.value <- MT[MT$GNID == GNID[i],]$P.value
+		p.value <- as.numeric(unique(sort(p.value)))
+		id <- as.character(GNID[i])
+		goterms <- unlist(lapply(MT[MT$GNID == GNID[i],]$V14, function(x){strsplit(x, "\\|")[[1]]}))
+		goterms <- unique(sort(goterms))
+		p.value <- rep(p.value, length(goterms))
+		id <- rep(id, length(goterms))
+		TMP_gpgtable <- cbind(ID=id, P.value=p.value, V14=goterms)
+		if (exists("gpgtable")) {
+			gpgtable <- rbind(gpgtable, TMP_gpgtable)
+		} else {
+			gpgtable <- TMP_gpgtable
+		}
+		setTxtProgressBar(pb, i)
+	}
+	
+	close(pb)
+	gpgtable <- as.data.frame(gpgtable)
+	gpgtable$ID <- as.character(gpgtable$ID)
+	gpgtable$P.value <- as.numeric(as.character(gpgtable$P.value))
+	keep <- !duplicated(gpgtable)
+	gpgtable <- gpgtable[ keep, ]
+	gpgtable
+}
+
+#############################################################################################################
+#
+#	GWA.test
+#
+#
+
+
+GWA.test <- function(GPGT, boot=1) {
+
+	keep <- tapply( GPGT$V14, GPGT$V14, length ) >= 10
+	goterms <- names( keep )
+	goterms <- goterms[ keep ]
+	GPGT <- GPGT[ GPGT$V14 %in% goterms, ]
+	top6goterms <- sort(tapply(GPGT$P.value, GPGT$V14, median))
+	top6goterms_names <- names(top6goterms)
+	GPGT_rowslength <- length(GPGT[,1])
+	
+
+	for (goterm_name in top6goterms_names) {
+		cat( paste("\nTesting ", goterm_name, "\n", sep = "") )
+		sampled_GPGT <- GPGT[ GPGT$V14 == goterm_name , ]
+		p_value_sampled_GPGT_median <- median( sampled_GPGT$P.value )
+		GPGT_sampled_rows_length <- length( sampled_GPGT$P.value )
+
+		pb <- txtProgressBar(min = 0, max = boot, style = 3)
+		p_value_medians <- c()
+		for (i in 1:boot) {
+			test_p_values <- GPGT[ rownames(GPGT) %in% sample(1:GPGT_rowslength, GPGT_sampled_rows_length), "P.value" ]
+			p_value_medians <- c( p_value_medians, median(test_p_values) )
+			setTxtProgressBar(pb, i)
+		}
+		close(pb)
+		p_value_miu <- mean( p_value_medians )
+		p_value_sd <- sd( p_value_medians )
+
+		pnorm_sampled_GPGT_mean_of_medians <- pnorm( p_value_sampled_GPGT_median, p_value_miu, p_value_sd, lower.tail = TRUE, log.p=FALSE )
+		tmp_output <- c(p_value_sampled_GPGT_median, p_value_miu, p_value_sd, pnorm_sampled_GPGT_mean_of_medians)
+		if (exists("goterms_p_values")) {
+			goterms_p_values <- rbind(goterms_p_values, tmp_output)
+		} else {
+			goterms_p_values <- tmp_output
+		}
+	}
+
+	colnames(goterms_p_values) <- c("PValues median", "MIU", "SD", "PNORM")
+	rownames(goterms_p_values) <- names(top6goterms)
+
+	goterms_p_values
 }
